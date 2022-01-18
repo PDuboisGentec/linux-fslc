@@ -1745,7 +1745,7 @@ static int mx6s_vidioc_query_ext_ctrl(struct file *file, void *fh,
 	qec->nr_of_dims = 0;
 	memset(qec->dims, 0, sizeof(qec->dims));
 	memset(qec->reserved, 0, sizeof(qec->reserved));
-
+	pr_err (" qec->name : %s \n", qec->name); 
 	return 0;
 }
 
@@ -1770,6 +1770,10 @@ static int mx6s_vidioc_s_ext_ctrls(struct file *file, void *fh,
 {
 	struct mx6s_csi_dev *csi_dev = video_drvdata(file);
 	struct v4l2_subdev *sd = csi_dev->sd;
+	
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	pr_info(" %s client : 0x%x csi_dev->sd : 0x%x \n",__func__,  client->adapter->nr, csi_dev->sd);
+	
 	return v4l2_subdev_call(sd, core, s_ext_ctrls, a);
 }
 

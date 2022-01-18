@@ -26,7 +26,7 @@
 #define ov2311_XCLK_MIN 6000000
 #define ov2311_XCLK_MAX 24000000
 
-#define VERSION "3.0"
+#define VERSION "4.0"
 
 #define ov2311_reg struct reg_16
 #define ov2311_TABLE_WAIT_MS	0
@@ -36,6 +36,9 @@
 
 #define ov2311_DEFAULT_WIDTH    640
 #define ov2311_DEFAULT_HEIGHT	480
+
+#define CAM1_BUS		1
+#define CAM2_BUS		3
 
 /*
  * Currently the MCU seems to support only one
@@ -243,12 +246,16 @@ enum _ap1302_custom_ctrl {
 	V4L2_CID_SET_SPIDATA = 0x19,
 };
 
+struct sensor_i2cdata_array cam1, cam2;
+
 struct ov2311 {
 	int numctrls;
 	struct v4l2_subdev subdev;
 	struct i2c_client *i2c_client;
-
+	struct v4l2_ctrl_handler ctrl_handler;
 	uint16_t frate_index;
+	int num_frm_fmts;
+
 
 	/*
 	 * NOTE:
@@ -279,7 +286,6 @@ struct ov2311 {
 
 	bool on;
 
-	int num_frm_fmts;
 
 	/*
 	 * Array of Camera framesizes
@@ -293,6 +299,12 @@ struct ov2311 {
 		int mode;
 		uint32_t pixel_format;
 	} *mcu_cam_frmfmt;
+
+	
+	ISP_STREAM_INFO *stream_info;
+	ISP_CTRL_INFO *mcu_ctrl_info;
+	int *streamdb;
+
 
 	int power_on;
 
@@ -312,13 +324,8 @@ typedef struct _spi_read_write {
 	char data[512];
 }SPI_READ_WRITE;
 
-
-static ISP_STREAM_INFO *stream_info = NULL;
-static ISP_CTRL_INFO *mcu_ctrl_info = NULL;
-
 /* Total formats */
 static int num_ctrls = 0;
-static int *streamdb;
 static uint32_t *ctrldb;
 
 /* Mutex for I2C lock */
@@ -334,14 +341,12 @@ static int ov2311_s_power(struct v4l2_subdev *sd, int on);
  */
 static int mcu_get_fw_version(struct i2c_client *client, unsigned char * fw_version);
 static int mcu_verify_fw_version(const unsigned char *const fw_version);
-static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *stream_info, int *frm_fmt_size);
-static int mcu_count_or_list_ctrls(struct i2c_client *client,
-			  ISP_CTRL_INFO * mcu_ctrl_info, int *numctrls);
+static int mcu_count_or_list_fmts(struct ov2311 *ov2311_data, ISP_STREAM_INFO *stream_info, int *frm_fmt_size);
 static int mcu_get_sensor_id(struct i2c_client *client, uint16_t * sensor_id);
 static int mcu_get_cmd_status(struct i2c_client *client, uint8_t * cmd_id,
 			      uint16_t * cmd_status, uint8_t * ret_code);
 static int mcu_isp_init(struct i2c_client *client);
-static int mcu_stream_config(struct i2c_client *client, uint32_t format,
+static int mcu_stream_config(struct ov2311 *ov2311_data, uint32_t format,
 			     int mode, int frate_index);
 static int mcu_set_ctrl(struct i2c_client *client, uint32_t ctrl_id,
 			uint8_t ctrl_type, int32_t curr_val);

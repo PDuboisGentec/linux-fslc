@@ -25,9 +25,10 @@
 #include <media/v4l2-ctrls.h>
 
 #include "ov2311.h"
+#include "global.h"
 #include "cam_firmware.h"
 
-#define ov2311_DEBUG 0
+#define ov2311_DEBUG 1 
 
 /*
  * General TODO:
@@ -43,17 +44,6 @@
  * I2C communication would succeed in one of the other attempts.
  */
 
-/*!
- * Maintains the information on the current state of the sensor.
- */
-static struct ov2311 ov2311_data;
-
-/*
- * TODO: Shouldn't the gpio pins be moved to the struct that holds
- * sensor state
- */
-static int pwdn_gpio, reset_gpio;
-
 /**********************************************************************
  *
  * START of ov2311 related code
@@ -62,6 +52,12 @@ static int pwdn_gpio, reset_gpio;
  */
 
 static int retries_for_i2c_commands = 5;
+
+static struct ov2311 *to_ov2311(const struct i2c_client *client)
+{
+	return container_of(i2c_get_clientdata(client), struct ov2311, subdev);
+}
+
 
 static int ov2311_write(struct i2c_client *client, u8 * val, u32 count)
 {
@@ -1515,14 +1511,17 @@ static int mcu_count_or_list_ctrls(struct i2c_client *client,
 	return ret;
 }
 
-static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *stream_info, int *frm_fmt_size)
+static int mcu_count_or_list_fmts(struct ov2311 *ov2311_data, ISP_STREAM_INFO *stream_info, int *frm_fmt_size)
 {
 	uint32_t payload_len = 0, err = 0;
 	uint8_t errcode = ERRCODE_SUCCESS, orig_crc = 0, calc_crc = 0, skip = 0;
 	uint16_t index = 0, mode = 0;
 
 	int loop = 0, num_frates = 0, ret = 0;
-
+	
+#ifdef ov2311_DEBUG
+	pr_info(" MCU list formats !! \n");
+#endif
 	/* Stream Info Variables */
 
 	/* lock semaphore */
@@ -1540,24 +1539,24 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
 		mc_data[3] = payload_len & 0xFF;
 		mc_data[4] = errorcheck(&mc_data[2], 2);
 
-		ov2311_write(client, mc_data, TX_LEN_PKT);
+		ov2311_write(ov2311_data->i2c_client, mc_data, TX_LEN_PKT);
 
 		mc_data[0] = CMD_SIGNATURE;
 		mc_data[1] = CMD_ID_GET_STREAM_INFO;
 		mc_data[2] = index >> 8;
 		mc_data[3] = index & 0xFF;
 		mc_data[4] = errorcheck(&mc_data[2], 2);
-		err = ov2311_write(client, mc_data, 5);
+		err = ov2311_write(ov2311_data->i2c_client, mc_data, 5);
 		if (err != 0) {
-			dev_err(&client->dev," %s(%d) Error - %d \n",
+			dev_err(&ov2311_data->i2c_client->dev," %s(%d) Error - %d \n",
 			       __func__, __LINE__, err);
 			ret = -EIO;
 			goto exit;
 		}
 
-		err = ov2311_read(client, mc_ret_data, RX_LEN_PKT);
+		err = ov2311_read(ov2311_data->i2c_client, mc_ret_data, RX_LEN_PKT);
 		if (err != 0) {
-			dev_err(&client->dev," %s(%d) Error - %d \n",
+			dev_err(&ov2311_data->i2c_client->dev," %s(%d) Error - %d \n",
 			       __func__, __LINE__, err);
 			ret = -EIO;
 			goto exit;
@@ -1567,7 +1566,7 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
 		orig_crc = mc_ret_data[4];
 		calc_crc = errorcheck(&mc_ret_data[2], 2);
 		if (orig_crc != calc_crc) {
-			dev_err(&client->dev,
+			dev_err(&ov2311_data->i2c_client->dev,
 				" %s(%d) CRC 0x%02x != 0x%02x \n",
 			     __func__, __LINE__, orig_crc, calc_crc);
 			ret = -EINVAL;
@@ -1588,7 +1587,7 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
 		    HEADER_FOOTER_SIZE;
 		errcode = mc_ret_data[5];
 		if (errcode != ERRCODE_SUCCESS) {
-			dev_err(&client->dev,
+			dev_err(&ov2311_data->i2c_client->dev,
 				" %s(%d) Errcode - 0x%02x \n",
 			     __func__, __LINE__, errcode);
 			ret = -EIO;
@@ -1596,9 +1595,9 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
 		}
 
 		memset(mc_ret_data, 0x00, payload_len);
-		err = ov2311_read(client, mc_ret_data, payload_len);
+		err = ov2311_read(ov2311_data->i2c_client, mc_ret_data, payload_len);
 		if (err != 0) {
-			dev_err(&client->dev," %s(%d) Error - %d \n",
+			dev_err(&ov2311_data->i2c_client->dev," %s(%d) Error - %d \n",
 			       __func__, __LINE__, err);
 			ret = -1;
 			goto exit;
@@ -1610,7 +1609,7 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
 		    errorcheck(&mc_ret_data[2],
 				 payload_len - HEADER_FOOTER_SIZE);
 		if (orig_crc != calc_crc) {
-			dev_err(&client->dev,
+			dev_err(&ov2311_data->i2c_client->dev,
 				" %s(%d) CRC 0x%02x != 0x%02x \n",
 			     __func__, __LINE__, orig_crc, calc_crc);
 			ret = -EINVAL;
@@ -1620,7 +1619,7 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
 		/* Verify Errcode */
 		errcode = mc_ret_data[payload_len - 1];
 		if (errcode != ERRCODE_SUCCESS) {
-			dev_err(&client->dev,
+			dev_err(&ov2311_data->i2c_client->dev,
 				" %s(%d) Errcode - 0x%02x \n",
 			     __func__, __LINE__, errcode);
 			ret = -EIO;
@@ -1648,7 +1647,7 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
 				break;
 
 			case FRAME_RATE_CONTINOUS:
-				dev_err(&client->dev,
+				dev_err(&ov2311_data->i2c_client->dev,
 					" The Stream format at index 0x%04x has FRAME_RATE_CONTINOUS,"
 				     "which is unsupported !! \n", index);
 
@@ -1666,23 +1665,23 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
 				/* ov2311_codes is already populated with V4L2_PIX_FMT_YUYV */
 				/* check if width and height are already in array - update frame rate only */
 				for (loop = 0; loop < (mode); loop++) {
-					if ((ov2311_data.mcu_cam_frmfmt[loop].size.width ==
+					if ((ov2311_data->mcu_cam_frmfmt[loop].size.width ==
 					     stream_info->width)
-					    && (ov2311_data.mcu_cam_frmfmt[loop].size.height ==
+					    && (ov2311_data->mcu_cam_frmfmt[loop].size.height ==
 						stream_info->height)
-						&& (ov2311_data.mcu_cam_frmfmt[loop].pixel_format == stream_info->fmt_fourcc)){
+						&& (ov2311_data->mcu_cam_frmfmt[loop].pixel_format == stream_info->fmt_fourcc)){
 
 						num_frates =
-						    ov2311_data.mcu_cam_frmfmt[loop].num_framerates;
-						*((int *)(ov2311_data.mcu_cam_frmfmt[loop].framerates) + num_frates)
+						    ov2311_data->mcu_cam_frmfmt[loop].num_framerates;
+						*((int *)(ov2311_data->mcu_cam_frmfmt[loop].framerates) + num_frates)
 						    = (int)(stream_info->frame_rate.
 							    disc.frame_rate_num /
 							    stream_info->frame_rate.
 							    disc.frame_rate_denom);
 
-						ov2311_data.mcu_cam_frmfmt[loop].num_framerates++;
+						ov2311_data->mcu_cam_frmfmt[loop].num_framerates++;
 
-						streamdb[index] = loop;
+						ov2311_data->streamdb[index] = loop;
 						skip = 1;
 						break;
 					}
@@ -1698,32 +1697,27 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
 				}
 
 				/* Add Width, Height, Frame Rate array, Mode into mcu_ov2311_frmfmt array */
-				ov2311_data.mcu_cam_frmfmt[mode].size.width = stream_info->width;
-				ov2311_data.mcu_cam_frmfmt[mode].size.height = stream_info->height;
-				ov2311_data.mcu_cam_frmfmt[loop].pixel_format = stream_info->fmt_fourcc;
+				ov2311_data->mcu_cam_frmfmt[mode].size.width = stream_info->width;
+				ov2311_data->mcu_cam_frmfmt[mode].size.height = stream_info->height;
+				ov2311_data->mcu_cam_frmfmt[loop].pixel_format = stream_info->fmt_fourcc;
 
-				num_frates = ov2311_data.mcu_cam_frmfmt[mode].num_framerates;
+				num_frates = ov2311_data->mcu_cam_frmfmt[mode].num_framerates;
 
-				*(ov2311_data.mcu_cam_frmfmt[mode].framerates + num_frates) =
+				*(ov2311_data->mcu_cam_frmfmt[mode].framerates + num_frates) =
 				    (int)(stream_info->frame_rate.disc.frame_rate_num /
 					  stream_info->frame_rate.disc.frame_rate_denom);
 
-				ov2311_data.mcu_cam_frmfmt[mode].num_framerates++;
+				ov2311_data->mcu_cam_frmfmt[mode].num_framerates++;
 
-				ov2311_data.mcu_cam_frmfmt[mode].mode = mode;
-				ov2311_data.mcu_cam_frmfmt[mode].mode = mode;
-				streamdb[index] = mode;
-//				printk(" ov2311_data.mcu_cam_frmfmt[mode].size.width : %d ov2311_data.mcu_cam_frmfmt[mode].size.height : %d 
-//					ov2311_data.mcu_cam_frmfmt[loop].pixel_format :0x%04x
-//				ov2311_data.mcu_cam_frmfmt[mode].mode : %d 
-//				streamdb[index] = mode : %d \n", ov2311_data.mcu_cam_frmfmt[mode].size.width,ov2311_data.mcu_cam_frmfmt[mode].size.height,ov2311_data.mcu_cam_frmfmt[loop].pixel_format,
-//				 ov2311_data.mcu_cam_frmfmt[mode].mode, index);
-
+				ov2311_data->mcu_cam_frmfmt[mode].mode = mode;
+				ov2311_data->mcu_cam_frmfmt[mode].mode = mode;
+				ov2311_data->streamdb[index] = mode;
+				
 				mode++;
 				break;
 
 			default:
-				dev_err(&client->dev,
+				dev_err(&ov2311_data->i2c_client->dev,
 					" The Stream format at index 0x%04x has format 0x%08x ,"
 				     "which is unsupported !! \n", index,
 				     stream_info->fmt_fourcc);
@@ -1742,7 +1736,7 @@ static int mcu_count_or_list_fmts(struct i2c_client *client, ISP_STREAM_INFO *st
  * Function to initialise the data related to MCU. Needs to be called
  * before trying to use them.
  */
-static int mcu_data_init(struct device *dev, int frm_fmt_size)
+static int mcu_data_init(struct ov2311 *ov2311_data,struct device *dev, int frm_fmt_size)
 {
 	int loop = 0;
 
@@ -1752,35 +1746,40 @@ static int mcu_data_init(struct device *dev, int frm_fmt_size)
 		return -EINVAL;
 	}
 
-	mcu_ctrl_info = devm_kzalloc(dev, sizeof(ISP_CTRL_INFO) * num_ctrls, GFP_KERNEL);
-	if(!mcu_ctrl_info) {
+	ov2311_data->mcu_ctrl_info = devm_kzalloc(dev, sizeof(ISP_CTRL_INFO) * num_ctrls, GFP_KERNEL);
+	if(!ov2311_data->mcu_ctrl_info) {
 		dev_err(dev, "Unable to allocate memory \n");
 		return -ENOMEM;
 	}
-
-	ctrldb = devm_kzalloc(dev, sizeof(uint32_t) * num_ctrls, GFP_KERNEL);
-	if(!ctrldb) {
-		dev_err(dev, "Unable to allocate memory \n");
-		return -ENOMEM;
+	if(ctrldb == NULL){
+		ctrldb = devm_kzalloc(dev, sizeof(uint32_t) * num_ctrls, GFP_KERNEL);
+		if(!ctrldb) {
+			dev_err(dev, "Unable to allocate memory \n");
+			return -ENOMEM;
+		}
 	}
 
-	stream_info = devm_kzalloc(dev, sizeof(ISP_STREAM_INFO) * (frm_fmt_size + 1), GFP_KERNEL);
+	ov2311_data->stream_info = devm_kzalloc(dev, sizeof(ISP_STREAM_INFO) * (frm_fmt_size + 1), GFP_KERNEL);
 
-	streamdb = devm_kzalloc(dev, sizeof(int) * (frm_fmt_size + 1), GFP_KERNEL);
-	if(!streamdb) {
+	ov2311_data->streamdb = devm_kzalloc(dev, sizeof(int) * (frm_fmt_size + 1), GFP_KERNEL);
+	if(!ov2311_data->streamdb) {
 		dev_err(dev,"Unable to allocate memory \n");
 		return -ENOMEM;
 	}
 
-	ov2311_data.mcu_cam_frmfmt = devm_kzalloc(dev, sizeof(struct mcu_frmfmt) * (frm_fmt_size), GFP_KERNEL);
-	if(!ov2311_data.mcu_cam_frmfmt) {
+	ov2311_data->mcu_cam_frmfmt = devm_kzalloc(dev, sizeof(struct mcu_frmfmt) * (frm_fmt_size), GFP_KERNEL);
+	if(!ov2311_data->mcu_cam_frmfmt) {
 		dev_err(dev, "Unable to allocate memory \n");
 		return -ENOMEM;
 	}
 
+#ifdef OV2311_DEBUG_ENUM_FRAMEINTERVAL
+	pr_info("mcu_data_init: mcu_cam_frmfmt: %p", ov2311_data->mcu_cam_frmfmt);
+#endif
+
 	for(; loop < frm_fmt_size; loop++) {
-		ov2311_data.mcu_cam_frmfmt[loop].framerates = devm_kzalloc(dev, sizeof(int) * MAX_NUM_FRATES, GFP_KERNEL);
-		if(!ov2311_data.mcu_cam_frmfmt[loop].framerates) {
+		ov2311_data->mcu_cam_frmfmt[loop].framerates = devm_kzalloc(dev, sizeof(int) * MAX_NUM_FRATES, GFP_KERNEL);
+		if(!ov2311_data->mcu_cam_frmfmt[loop].framerates) {
 			dev_err(dev, "Unable to allocate memory \n");
 			return -ENOMEM;
 		}
@@ -1788,6 +1787,7 @@ static int mcu_data_init(struct device *dev, int frm_fmt_size)
 
 	return 0;
 }
+
 
 static int mcu_get_sensor_id(struct i2c_client *client, uint16_t * sensor_id)
 {
@@ -2151,7 +2151,7 @@ static int mcu_get_ctrl_ui(struct i2c_client *client,
 
 }
 
-static int mcu_isp_configuration(uint8_t cmd_id, struct i2c_client *client)
+static int mcu_isp_configuration(struct ov2311 *ov2311_data,uint8_t cmd_id, struct i2c_client *client)
 {
     unsigned char mc_data[100];
 	uint32_t payload_len = 0;
@@ -2180,13 +2180,13 @@ static int mcu_isp_configuration(uint8_t cmd_id, struct i2c_client *client)
 	switch(cmd_id) {
 		case CMD_ID_LANE_CONFIG:
 		        /* Lane Configuration */
-			payload_data = ov2311_data.mipi_lane_config == 4 ? NUM_LANES_4 : NUM_LANES_2;
+			payload_data = ov2311_data->mipi_lane_config == 4 ? NUM_LANES_4 : NUM_LANES_2;
 		        mc_data[2] = payload_data >> 8;
 			mc_data[3] = payload_data & 0xff;
 			break;
 		case CMD_ID_MIPI_CLK_CONFIG:
 		        /* MIPI CLK Configuration */
-			payload_data = ov2311_data.mipi_clk_config;
+			payload_data = ov2311_data->mipi_clk_config;
 		        mc_data[2] = payload_data >> 8;
 			mc_data[3] = payload_data & 0xff;
 			break;
@@ -2240,7 +2240,7 @@ static int mcu_isp_configuration(uint8_t cmd_id, struct i2c_client *client)
 	return err;
 }
 
-static int mcu_stream_config(struct i2c_client *client, uint32_t format,
+static int mcu_stream_config(struct ov2311 *ov2311_data, uint32_t format,
 			     int mode, int frate_index)
 {
 	uint32_t payload_len = 0;
@@ -2249,34 +2249,30 @@ static int mcu_stream_config(struct i2c_client *client, uint32_t format,
 	uint8_t retcode = 0, cmd_id = 0;
 	int loop = 0, ret = 0, err = 0, retry = 1000;
 	static uint16_t prev_index = 0xFFFE;
-	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
+
 	/* lock semaphore */
 	mutex_lock(&mcu_i2c_mutex);
 
-	cmd_id = CMD_ID_STREAM_CONFIG;
-	if (mcu_get_cmd_status(client, &cmd_id, &cmd_status, &retcode) < 0) {
-		dev_err(&client->dev," %s(%d) Error \n", __func__, __LINE__);
+	cmd_id = CMD_ID_UNKNOWN;
+	if (mcu_get_cmd_status(ov2311_data->i2c_client, &cmd_id, &cmd_status, &retcode) < 0) {
+		dev_err(&ov2311_data->i2c_client->dev," %s(%d) Error \n", __func__, __LINE__);
 		ret = -EIO;
 		goto exit;
 	}
 
 	if ((cmd_status != MCU_CMD_STATUS_SUCCESS) ||
 	    (retcode != ERRCODE_SUCCESS)) {
-		dev_err(&client->dev,
+		dev_err(&ov2311_data->i2c_client->dev,
 			" ISP is Unintialized or Busy STATUS = 0x%04x Errcode = 0x%02x !! \n",
 		     cmd_status, retcode);
 		ret = -EBUSY;
 		goto exit;
 	}
 
-	printk(" /********* func : %s format :  0x%8x\n\r", __func__, format);
-
-	for (loop = 0;(&streamdb[loop]) != NULL; loop++) {
-		printk(" loop : %d \n\r", loop);
-		if (streamdb[loop] == mode) {
+	for (loop = 0;(&ov2311_data->streamdb[loop]) != NULL; loop++) {
+		if (ov2311_data->streamdb[loop] == mode) {
 			if(format == V4L2_PIX_FMT_GREY )
 			{
-				printk(" format = 0x%8x loop = %d index = %d frate_index = %d\n\r", format, loop, index, frate_index);
 				index = loop + frate_index;
 			}else if(format == V4L2_PIX_FMT_Y16)
 			{
@@ -2285,39 +2281,31 @@ static int mcu_stream_config(struct i2c_client *client, uint32_t format,
 			}
 			else
 				index = loop + frate_index;
-			//else if(ov2311_data.mcu_cam_frmfmt[mode].size.width != 2560)
-			//	index = loop + frate_index + 4;
-			//else
-			//	index = loop + frate_index;
 			break;
 		}
 	}
 
 
-	printk(" stream config# : %d \n\r", index);
-
 #ifdef ov2311_DEBUG
 	pr_info(" Index = 0x%04x , format = 0x%08x, width = %hu,"
 		     " height = %hu, frate num = %hu \n", index, format,
-		     ov2311_data.mcu_cam_frmfmt[mode].size.width,
-		     ov2311_data.mcu_cam_frmfmt[mode].size.height,
-		     ov2311_data.mcu_cam_frmfmt[mode].framerates[frate_index]);
+		     ov2311_data->mcu_cam_frmfmt[mode].size.width,
+		     ov2311_data->mcu_cam_frmfmt[mode].size.height,
+		     ov2311_data->mcu_cam_frmfmt[mode].framerates[frate_index]);
 #endif
 	
-
+#if 0
 	if (index == 0xFFFF) {
 		ret = -EINVAL;
 		goto exit;
 	}
 
 	if(prev_index == index) {
-#ifdef ov2311_DEBUG
 		pr_info("Skipping Previous mode set ... \n");
-#endif
 		ret = 0;
 		goto exit;
 	}
-
+#endif 
 issue_cmd:
 	/* First Txn Payload length = 0 */
 	payload_len = 14;
@@ -2328,7 +2316,7 @@ issue_cmd:
 	mc_data[3] = payload_len & 0xFF;
 	mc_data[4] = errorcheck(&mc_data[2], 2);
 
-	ov2311_write(client, mc_data, TX_LEN_PKT);
+	ov2311_write(ov2311_data->i2c_client, mc_data, TX_LEN_PKT);
 
 	mc_data[0] = CMD_SIGNATURE;
 	mc_data[1] = CMD_ID_STREAM_CONFIG;
@@ -2342,25 +2330,25 @@ issue_cmd:
 	mc_data[7] = format & 0xFF;
 
 	/* width */
-	mc_data[8] = ov2311_data.mcu_cam_frmfmt[mode].size.width >> 8;
-	mc_data[9] = ov2311_data.mcu_cam_frmfmt[mode].size.width & 0xFF;
+	mc_data[8] = ov2311_data->mcu_cam_frmfmt[mode].size.width >> 8;
+	mc_data[9] = ov2311_data->mcu_cam_frmfmt[mode].size.width & 0xFF;
 
 	/* height */
-	mc_data[10] = ov2311_data.mcu_cam_frmfmt[mode].size.height >> 8;
-	mc_data[11] = ov2311_data.mcu_cam_frmfmt[mode].size.height & 0xFF;
+	mc_data[10] = ov2311_data->mcu_cam_frmfmt[mode].size.height >> 8;
+	mc_data[11] = ov2311_data->mcu_cam_frmfmt[mode].size.height & 0xFF;
 
 	/* frame rate num */
-	mc_data[12] = ov2311_data.mcu_cam_frmfmt[mode].framerates[frate_index] >> 8;
-	mc_data[13] = ov2311_data.mcu_cam_frmfmt[mode].framerates[frate_index] & 0xFF;
+	mc_data[12] = ov2311_data->mcu_cam_frmfmt[mode].framerates[frate_index] >> 8;
+	mc_data[13] = ov2311_data->mcu_cam_frmfmt[mode].framerates[frate_index] & 0xFF;
 
 	/* frame rate denom */
 	mc_data[14] = 0x00;
 	mc_data[15] = 0x01;
 
 	mc_data[16] = errorcheck(&mc_data[2], 14);
-	err = ov2311_write(client, mc_data, 17);
+	err = ov2311_write(ov2311_data->i2c_client, mc_data, 17);
 	if (err != 0) {
-		dev_err(&client->dev," %s(%d) Error - %d \n", __func__,
+		dev_err(&ov2311_data->i2c_client->dev," %s(%d) Error - %d \n", __func__,
 		       __LINE__, err);
 		ret = -EIO;
 		goto exit;
@@ -2369,8 +2357,8 @@ issue_cmd:
 	while (--retry > 0) {
 		cmd_id = CMD_ID_STREAM_CONFIG;
 		if (mcu_get_cmd_status(
-			client, &cmd_id, &cmd_status, &retcode) < 0) {
-			dev_err(&client->dev,
+			ov2311_data->i2c_client, &cmd_id, &cmd_status, &retcode) < 0) {
+			dev_err(&ov2311_data->i2c_client->dev,
 				" %s(%d) MCU GET CMD Status Error : loop : %d \n",
 				__func__, __LINE__, loop);
 			ret = -EIO;
@@ -2391,7 +2379,7 @@ issue_cmd:
 
 		if ((retcode != ERRCODE_BUSY) &&
 		    ((cmd_status != MCU_CMD_STATUS_PENDING))) {
-			dev_err(&client->dev,
+			dev_err(&ov2311_data->i2c_client->dev,
 				"(%s) %d Error STATUS = 0x%04x RET = 0x%02x\n",
 				__func__, __LINE__, cmd_status, retcode);
 			ret = -EIO;
@@ -2402,13 +2390,13 @@ issue_cmd:
 		mdelay(10);
 	}
 
-	dev_err(&client->dev," %s(%d) Error - %d \n", __func__,
+	dev_err(&ov2311_data->i2c_client->dev," %s(%d) Error - %d \n", __func__,
 			__LINE__, err);
 	ret = -ETIMEDOUT;
 
 exit:
-	if(!ret)
-		prev_index = index;
+//	if(!ret)
+//		prev_index = index;
 
 	/* unlock semaphore */
 	mutex_unlock(&mcu_i2c_mutex);
@@ -2689,7 +2677,6 @@ static int mcu_set_ctrl(struct i2c_client *client, uint32_t arg_ctrl_id,
 	uint8_t retcode = 0, cmd_id = 0;
 	int loop = 0, ret = 0, err = 0;
 	uint32_t ctrl_id = 0;
-
 	/* lock semaphore */
 	mutex_lock(&mcu_i2c_mutex);
 
@@ -2699,7 +2686,8 @@ static int mcu_set_ctrl(struct i2c_client *client, uint32_t arg_ctrl_id,
 
 	for (loop = 0; loop < num_ctrls; loop++) {
 		if (ctrldb[loop] == ctrl_id) {
-			index = mcu_ctrl_info[loop].mcu_ctrl_index;
+			index = loop;
+			
 			break;
 		}
 	}
@@ -2794,6 +2782,7 @@ static int mcu_get_ctrl(struct i2c_client *client, uint32_t arg_ctrl_id,
 	uint8_t errcode = ERRCODE_SUCCESS, orig_crc = 0, calc_crc = 0;
 	uint16_t index = 0xFFFF;
 	int loop = 0, ret = 0, err = 0;
+	int i;
 
 	uint32_t ctrl_id = 0;
 
@@ -2806,21 +2795,14 @@ static int mcu_get_ctrl(struct i2c_client *client, uint32_t arg_ctrl_id,
 
 	for (loop = 0; loop < num_ctrls; loop++) {
 		if (ctrldb[loop] == ctrl_id) {
-			index = mcu_ctrl_info[loop].mcu_ctrl_index;
+			index=loop;
+
 			break;
 		}
 	}
 
 	if (index == 0xFFFF) {
 		ret = -EINVAL;
-		goto exit;
-	}
-
-	if (
-		mcu_ctrl_info[loop].ctrl_ui_data.ctrl_ui_info.ctrl_ui_flags &
-		V4L2_CTRL_FLAG_WRITE_ONLY
-	) {
-		ret = -EACCES;
 		goto exit;
 	}
 
@@ -2994,6 +2976,9 @@ static int ov2311_querymenu(struct v4l2_subdev *sd, struct v4l2_querymenu *qm)
 {
 	uint32_t index = 0;
 	int loop;
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct ov2311 *ov2311_data = to_ov2311(client);
+	int i;
 
 	if (sd == NULL || qm == NULL)
 		return -EINVAL;
@@ -3009,15 +2994,6 @@ static int ov2311_querymenu(struct v4l2_subdev *sd, struct v4l2_querymenu *qm)
 		return -EINVAL;
 	}
 
-	if (
-		!(
-			0 <= qm->index &&
-			qm->index < mcu_ctrl_info[index].ctrl_ui_data.ctrl_menu_info.num_menu_elem
-		 )
-	) {
-		return -EINVAL;
-	}
-
 	/*
 	 * Copy the name of the menu.
 	 *
@@ -3025,7 +3001,7 @@ static int ov2311_querymenu(struct v4l2_subdev *sd, struct v4l2_querymenu *qm)
 	 * V4L2_CTRL_TYPE_INTEGER_MENU. So, this should be
 	 * enough.
 	 */
-	strcpy(qm->name, mcu_ctrl_info[index].ctrl_ui_data.ctrl_menu_info.menu[qm->index]);
+	strcpy(qm->name, ov2311_data->mcu_ctrl_info[index].ctrl_ui_data.ctrl_menu_info.menu[qm->index]);
 
 	/*
 	 * Set the reserved to zero as mentioned in spec
@@ -3039,6 +3015,8 @@ static int ov2311_queryctrl(struct v4l2_subdev *sd, struct v4l2_queryctrl *qc)
 {
 	int index, ctrl_index = -1, ctrl_id;
 	bool next_ctrl = (qc->id & V4L2_CTRL_FLAG_NEXT_CTRL);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct ov2311 *ov2311_data = to_ov2311(client);
 
 	if (sd == NULL || qc == NULL)
 		return -EINVAL;
@@ -3093,7 +3071,7 @@ static int ov2311_queryctrl(struct v4l2_subdev *sd, struct v4l2_queryctrl *qc)
 	}
 
 	if (
-		mcu_ctrl_info[ctrl_index].ctrl_type == CTRL_STANDARD
+		ov2311_data->mcu_ctrl_info[ctrl_index].ctrl_type == CTRL_STANDARD
 	) {
 		/*
 		 * We cannot use `v4l2_ctrl_query_fill` instead of manually filling
@@ -3103,18 +3081,18 @@ static int ov2311_queryctrl(struct v4l2_subdev *sd, struct v4l2_queryctrl *qc)
 		 * e.g., V4L2_CID_FOCUS_AUTO has a max value of 1 according to standard
 		 * but our version of it has a max value of 5.
 		 */
-		qc->id = mcu_ctrl_info[ctrl_index].ctrl_id;
+		qc->id = ov2311_data->mcu_ctrl_info[ctrl_index].ctrl_id;
 
-		strcpy(qc->name, mcu_ctrl_info[ctrl_index].ctrl_ui_data.ctrl_ui_info.ctrl_name);
+		strcpy(qc->name, ov2311_data->mcu_ctrl_info[ctrl_index].ctrl_ui_data.ctrl_ui_info.ctrl_name);
 
-		qc->type = mcu_ctrl_info[ctrl_index].ctrl_ui_data.ctrl_ui_info.ctrl_ui_type;
-		qc->flags = mcu_ctrl_info[ctrl_index].ctrl_ui_data.ctrl_ui_info.ctrl_ui_flags;
+		qc->type = ov2311_data->mcu_ctrl_info[ctrl_index].ctrl_ui_data.ctrl_ui_info.ctrl_ui_type;
+		qc->flags = ov2311_data->mcu_ctrl_info[ctrl_index].ctrl_ui_data.ctrl_ui_info.ctrl_ui_flags;
 
-		qc->minimum = mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_min;
-		qc->maximum = mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_max;
-		qc->step = mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_step;
-		qc->default_value = mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_def;
-	}
+		qc->minimum = ov2311_data->mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_min;
+		qc->maximum = ov2311_data->mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_max;
+		qc->step = ov2311_data->mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_step;
+		qc->default_value = ov2311_data->mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_def;
+	}	
 	else {
 		return -EINVAL;
 	}
@@ -3124,7 +3102,7 @@ static int ov2311_queryctrl(struct v4l2_subdev *sd, struct v4l2_queryctrl *qc)
 
 static int ov2311_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 {
-	struct i2c_client *client = ov2311_data.i2c_client;
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int err = 0;
 	uint8_t ctrl_type = 0;
 	int ctrl_val = 0;
@@ -3148,11 +3126,14 @@ static int ov2311_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 
 static int ov2311_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 {
-	struct i2c_client *client = ov2311_data.i2c_client;
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct i2c_client *client1;
+
 	int err = 0, index, ctrl_index = 0;
 
 	if (sd == NULL || ctrl == NULL)
 		return -EINVAL;
+	
 
 	for (index = 0; index < num_ctrls; index++) {
 		if (ctrldb[index] == ctrl->id) {
@@ -3165,23 +3146,27 @@ static int ov2311_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 		return -EINVAL;
 	}
 
-	/*
-	 * TODO: the following is redundant as the MCU should already return
-	 * a return code indicating the value is out of range.
-	 *
-	 * We do this as we don't want to call the MCU to validate this as
-	 * we already have this information.
-	 */
-	if (
-		ctrl->value < mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_min ||
-		ctrl->value > mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_max
-	)
-		return -ERANGE;
 
-	if ((err =
-	     mcu_set_ctrl(client, ctrl->id, CTRL_STANDARD, ctrl->value)) < 0) {
-		dev_err(&client->dev," %s (%d ) \n", __func__, __LINE__);
-		return -EINVAL;
+		switch(client->adapter->nr){
+		case CAM1_BUS: client1 = cam1.i2c_client; break;
+		case CAM2_BUS:
+				 	client1 = cam2.i2c_client;
+				break;
+		default: client1 = NULL; pr_err("unknowm bus\n");
+	}
+	
+	if((client->adapter->nr == CAM1_BUS) || (client->adapter->nr == CAM2_BUS) ){
+		if ((err =
+	    	 mcu_set_ctrl(client, ctrl->id, CTRL_STANDARD, ctrl->value)) < 0) {
+			dev_err(&client->dev," %s (%d ) \n", __func__, __LINE__);
+			return -EINVAL;
+		}
+	}
+	if(client1){
+		if ((mcu_set_ctrl(client1, ctrl->id, CTRL_STANDARD, ctrl->value)) < 0) {
+			dev_err(&client->dev," %s (%d ) \n", __func__, __LINE__);
+			return -EINVAL;
+		}
 	}
 
 	return err;
@@ -3243,13 +3228,6 @@ static int ov2311_try_ext_ctrls(struct v4l2_subdev *sd, struct v4l2_ext_controls
 			return -EINVAL;
 		}
 
-		if (
-			ext_ctrl->value < mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_min ||
-			ext_ctrl->value > mcu_ctrl_info[ctrl_index].ctrl_data.std.ctrl_max
-		) {
-			ctrls->error_idx = ext_ctrl->id;
-			return -ERANGE;
-		}
 	}
 
 	return 0;
@@ -3259,7 +3237,9 @@ static int ov2311_try_ext_ctrls(struct v4l2_subdev *sd, struct v4l2_ext_controls
 static int ov2311_s_ext_ctrls(struct v4l2_subdev *sd, struct v4l2_ext_controls *ctrls)
 {
 	int i, err = 0;
-	struct i2c_client *client = ov2311_data.i2c_client;
+
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+
 	SPI_READ_WRITE storage_data;
 	if (sd == NULL || ctrls == NULL)
 		return -EINVAL;
@@ -3292,7 +3272,7 @@ static int ov2311_s_ext_ctrls(struct v4l2_subdev *sd, struct v4l2_ext_controls *
 			.id = ext_ctrl->id,
 			.value = ext_ctrl->value
 		};
-
+		
 		err = ov2311_s_ctrl(sd, &ctrl);
 		if (err) {
 			/*
@@ -3315,11 +3295,10 @@ static int ov2311_s_ext_ctrls(struct v4l2_subdev *sd, struct v4l2_ext_controls *
 
 static int ov2311_enum_frameintervals(struct v4l2_subdev *sd,struct v4l2_subdev_pad_config *cfg,struct v4l2_subdev_frame_interval_enum *fival)
 {
-	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct ov2311 *ov2311_data = to_ov2311(client);
 	int j;
 	int32_t format_fourcc;
-	printk("ov2311_enum_frameintervals\n");
 	if (fival->width == 0 || fival->height == 0)
 	{
 		dev_err(&client->dev, "Please assign width and height.\n");
@@ -3337,46 +3316,36 @@ static int ov2311_enum_frameintervals(struct v4l2_subdev *sd,struct v4l2_subdev_
 		dev_err(&client->dev, "Please use valid mbus code.\n");
 		return -EINVAL;
 	}
-	/*if (fival->code != ov2311_data.fmt.code)
-	{
-		return -EINVAL;
-	}*/
-
-	for (j=0; j < ov2311_data.num_frm_fmts; j++) {
+	
+	for (j=0; j < ov2311_data->num_frm_fmts; j++) {
 		if (
-			fival->width == ov2311_data.mcu_cam_frmfmt[j].size.width &&
-			fival->height == ov2311_data.mcu_cam_frmfmt[j].size.height &&
-			format_fourcc == ov2311_data.mcu_cam_frmfmt[j].pixel_format
+			fival->width == ov2311_data->mcu_cam_frmfmt[j].size.width &&
+			fival->height == ov2311_data->mcu_cam_frmfmt[j].size.height &&
+			format_fourcc == ov2311_data->mcu_cam_frmfmt[j].pixel_format
 		) {
-			if (fival->index >= ov2311_data.mcu_cam_frmfmt[j].num_framerates)
+			if (fival->index >= ov2311_data->mcu_cam_frmfmt[j].num_framerates)
 			{
 				pr_err("Func : %s Line : %u\n", __func__, __LINE__);
 				return -EINVAL;
 			}
 
 			fival->interval.numerator = 1;
-			fival->interval.denominator = ov2311_data.mcu_cam_frmfmt[j].framerates[fival->index];
+			fival->interval.denominator = ov2311_data->mcu_cam_frmfmt[j].framerates[fival->index];
 
 			return 0;
 		}
 	}
-	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
 	return -EINVAL;
 
 }
 
 static int ov2311_enum_framesizes(struct v4l2_subdev *sd,struct v4l2_subdev_pad_config *cfg,struct v4l2_subdev_frame_size_enum *fse)
 {
-	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
+	
 	int32_t format_fourcc;
-	#if 0
-	if(fse->code == MEDIA_BUS_FMT_Y8_1X8 && fse->index > 3)
-	{
-		pr_err("Func : %s Line : %u\n", __func__, __LINE__);
-		return -EINVAL;
-	}
-#endif 
-	//else if(fse->code == MEDIA_BUS_FMT_Y10_1X10 && fse->index <=3)
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct ov2311 *ov2311_data = to_ov2311(client);
+
 	 
 	if(fse->code == MEDIA_BUS_FMT_Y10_1X10)
 	{
@@ -3384,25 +3353,20 @@ static int ov2311_enum_framesizes(struct v4l2_subdev *sd,struct v4l2_subdev_pad_
 		pr_err("Func : %s Line : %u\n", __func__, __LINE__);
 		return -EINVAL;
 	}
-	//else if(fse->code == MEDIA_BUS_FMT_Y10_1X10 && fse->index > 3)
-	//	return -EINVAL;
+	
 
 		
-	if (fse->index >= ov2311_data.num_frm_fmts)
+	if (fse->index >= ov2311_data->num_frm_fmts)
 	{
 		pr_err("Func : %s Line : %u\n", __func__, __LINE__);
 		return -EINVAL;
 	}
-	pr_err(" fse->index : %d \n\r", fse->index);
-	/*if (fse->code != ov2311_data.fmt.code)
-	{
-		return -EINVAL;
-	}*/
+	
 
-	fse->max_width = ov2311_data.mcu_cam_frmfmt[fse->index].size.width;
+	fse->max_width = ov2311_data->mcu_cam_frmfmt[fse->index].size.width;
 	fse->min_width = fse->max_width;
 
-	fse->max_height = ov2311_data.mcu_cam_frmfmt[fse->index].size.height;
+	fse->max_height = ov2311_data->mcu_cam_frmfmt[fse->index].size.height;
 	fse->min_height = fse->max_height;
 
 	return 0;
@@ -3410,7 +3374,8 @@ static int ov2311_enum_framesizes(struct v4l2_subdev *sd,struct v4l2_subdev_pad_
 
 static int ov2311_enum_mbus_code(struct v4l2_subdev *sd,struct v4l2_subdev_pad_config *cfg,struct v4l2_subdev_mbus_code_enum *code)
 {
-	pr_err(" code-> index : %d Func : %s Line : %u\n",code->index, __func__, __LINE__);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct ov2311 *ov2311_data = to_ov2311(client);
 
 	if (code->pad || code->index >= ov2311_MAX_FORMAT_SUPPORTED)
 	{
@@ -3429,13 +3394,27 @@ static int ov2311_enum_mbus_code(struct v4l2_subdev *sd,struct v4l2_subdev_pad_c
 		code->code = MEDIA_BUS_FMT_Y10_1X10;
 	}
 
+	code->code = ov2311_data->fmt.code;
+	
 	return 0;
 }
 
 static int ov2311_s_stream(struct v4l2_subdev *sd, int enable)
 {
-	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct i2c_client *client1 = NULL;
+	struct i2c_client *client2 = NULL;
+
+	pr_info(" %s  client : 0x%x \n", __func__, client->adapter->nr);
+	switch(client->adapter->nr){
+		case CAM1_BUS: client1 = cam1.i2c_client; break;
+		case CAM2_BUS: 
+					client2 = cam2.i2c_client; 
+				break;
+		default: pr_err("unknowm bus\n");
+	}
+
+
 	int err = 0,
 		/*
 		 * Have more retries for power wakeup and power down as we
@@ -3450,11 +3429,26 @@ static int ov2311_s_stream(struct v4l2_subdev *sd, int enable)
 				mcu_isp_stream_off(client)
 				);
 		if (err < 0)
-		{
-			dev_err(&client->dev, "%s: Failed Stream off\n", __func__);
-			return err;
-		}
+			pr_err("CAM streamoff error\n");
+		
+		if(client1) {
+			err = RETRY_SEQUENCE(
+					retries,
+					mcu_isp_stream_off(client1)
+					);
+			if (err < 0)
+				pr_err("CAM1 streamoff error\n");
+		}	
 
+		if(client2) {
+			err = RETRY_SEQUENCE(
+					retries,
+					mcu_isp_stream_off(client2)
+					);
+			if (err < 0)
+				pr_err("CAM2 streamoff error\n");
+		}
+		return err;
 	}else
 	{
 
@@ -3463,9 +3457,24 @@ static int ov2311_s_stream(struct v4l2_subdev *sd, int enable)
 				mcu_isp_stream_on(client)
 				);
 		if (err < 0)
-		{
-			dev_err(&client->dev, "%s: Failed Stream on\n", __func__);
-			return err;
+			pr_err("CAM streamoff error\n");
+
+		if(client1) {
+			err = RETRY_SEQUENCE(
+					retries,
+					mcu_isp_stream_on(client1)
+					);
+			if (err < 0)
+				pr_err("CAM1 streamon error\n");
+		}	
+
+		if(client2) {
+			err = RETRY_SEQUENCE(
+					retries,
+					mcu_isp_stream_on(client2)
+					);
+			if (err < 0)
+				pr_err("CAM2 streamon error\n");
 		}
 	}
 
@@ -3477,12 +3486,16 @@ static int ov2311_s_stream(struct v4l2_subdev *sd, int enable)
 
 static int ov2311_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param)
 {
-	int mode = ov2311_data.streamcap.capturemode;
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct ov2311 *ov2311_data = to_ov2311(client);
+	int ret=0;
+
+	int mode = ov2311_data->streamcap.capturemode;
 
 	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
 	param->parm.capture.capability |= V4L2_CAP_TIMEPERFRAME;
 	param->parm.capture.timeperframe.denominator =
-	    ov2311_data.mcu_cam_frmfmt[mode].framerates[ov2311_data.frate_index];
+	    ov2311_data->mcu_cam_frmfmt[mode].framerates[ov2311_data->frate_index];
 	param->parm.capture.timeperframe.numerator = 1;
 
 	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
@@ -3493,12 +3506,28 @@ static int ov2311_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret = 0, err = 0;
-	int mode = ov2311_data.streamcap.capturemode;
-	int fourcc = ov2311_data.pix.pixelformat;
+	struct ov2311 *ov2311_data = to_ov2311(client);
+	struct ov2311 sensor1;
+	struct ov2311 sensor2;
 
-	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
+	int mode = ov2311_data->streamcap.capturemode;
+	int fourcc = ov2311_data->pix.pixelformat;
+
+	memcpy(&sensor1,ov2311_data,sizeof(struct ov2311));
+	memcpy(&sensor2,ov2311_data,sizeof(struct ov2311));
+	sensor1.i2c_client = NULL;	
+	sensor2.i2c_client = NULL;	
+
+	switch(ov2311_data->i2c_client->adapter->nr){
+		case CAM1_BUS: sensor1.i2c_client = cam1.i2c_client; break;
+		case CAM2_BUS: sensor2.i2c_client = cam2.i2c_client; break;
+		default: pr_info("default\n");
+	}
+
+
+	
 	param->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
-	param->parm.capture.timeperframe.denominator = 	ov2311_data.mcu_cam_frmfmt[mode].framerates[ov2311_data.frate_index]; 
+	param->parm.capture.timeperframe.denominator = 	ov2311_data->mcu_cam_frmfmt[mode].framerates[ov2311_data->frate_index]; 
 	param->parm.capture.timeperframe.numerator = 1;	
 	
 	memset(param->parm.capture.reserved, 0, 4*sizeof(u32));
@@ -3506,10 +3535,10 @@ static int ov2311_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param)
 	if (
 		param->parm.capture.timeperframe.denominator == 0 &&
 		param->parm.capture.timeperframe.numerator == 0 &&
-		ov2311_data.mcu_cam_frmfmt[mode].num_framerates == 1
+		ov2311_data->mcu_cam_frmfmt[mode].num_framerates == 1
 	) {
 		param->parm.capture.timeperframe.denominator =
-			ov2311_data.mcu_cam_frmfmt[mode].framerates[ov2311_data.frate_index];
+			ov2311_data->mcu_cam_frmfmt[mode].framerates[ov2311_data->frate_index];
 		param->parm.capture.timeperframe.numerator = 1;
 		/*
 		 * We would have to reset the frame interval to a
@@ -3519,7 +3548,7 @@ static int ov2311_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param)
 		return 0;
 	}
 
-	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
+	
 	/*
 	 * Currently, we haven't handled numerators other than 1.
 	 * So, fail in case we get something else.
@@ -3529,10 +3558,10 @@ static int ov2311_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param)
 		return -EINVAL;
 	}
 
-	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
-	for (ret = 0; ret < ov2311_data.mcu_cam_frmfmt[mode].num_framerates;
+	
+	for (ret = 0; ret < ov2311_data->mcu_cam_frmfmt[mode].num_framerates;
 	     ret++) {
-		if ((ov2311_data.mcu_cam_frmfmt[mode].framerates[ret] ==
+		if ((ov2311_data->mcu_cam_frmfmt[mode].framerates[ret] ==
 		     param->parm.capture.timeperframe.denominator)) {
 			/*
 			 * Have more retries for power wakeup and power down as we
@@ -3540,18 +3569,38 @@ static int ov2311_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param)
 			 * which seem to be avoiding those failures in other cases.
 			 */
 			int retries = retries_for_i2c_commands * 2;
-			ov2311_data.frate_index = ret;
-
+			ov2311_data->frate_index = ret;
+#if 0
 			/* call stream config with width, height, frame rate */
 			err = RETRY_SEQUENCE(
 				retries,
-				mcu_stream_config(client, fourcc, mode,	ov2311_data.frate_index)
+				mcu_stream_config(ov2311_data, fourcc, mode,	ov2311_data->frate_index)
 			);
 			if (err < 0) {
 				dev_err(&client->dev, "%s: Failed stream_config \n", __func__);
 				return err;
 			}
 
+			if(sensor1.i2c_client){
+				err =
+					mcu_stream_config(&sensor1, fourcc, mode,
+							ov2311_data->frate_index);
+				if (err < 0) {
+					dev_err(&client->dev, "%s: Failed cam 2 stream_config \n", __func__);
+					return err;
+				}
+			}
+
+			if(sensor2.i2c_client){
+				err =
+					mcu_stream_config(&sensor2, fourcc, mode,
+							ov2311_data->frate_index);
+				if (err < 0) {
+					dev_err(&client->dev, "%s: Failed cam 2 stream_config \n", __func__);
+					return err;
+				}
+			}
+#endif 
 			mdelay(10);
 
 			return 0;
@@ -3579,17 +3628,21 @@ static int ov2311_get_fmt(struct v4l2_subdev *sd,struct v4l2_subdev_pad_config *
 {
 	int ret = 0;
 	
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct ov2311 *ov2311_data = to_ov2311(client);
+
+
 	if (format->pad)
 	{
 		printk(" /************** ov2311_get_fmt *************/\n");
 		return -EINVAL;
 	}
-	printk(" /************** ov2311_get_fmt *************/\n");
-	format->format.code = ov2311_data.fmt.code;
-	format->format.colorspace = ov2311_data.fmt.colorspace;
+	
+	format->format.code = ov2311_data->fmt.code;
+	format->format.colorspace = ov2311_data->fmt.colorspace;
 	format->format.field = V4L2_FIELD_NONE;
-	format->format.width	= ov2311_data.pix.width;
-	format->format.height	= ov2311_data.pix.height; 
+	format->format.width	= ov2311_data->pix.width;
+	format->format.height	= ov2311_data->pix.height; 
 
 	return ret;
 }
@@ -3599,7 +3652,26 @@ static int ov2311_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config 
 {
 	int i;
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct ov2311 *ov2311_data = to_ov2311(client);
+	struct ov2311 sensor1;
+	struct ov2311 sensor2;
 	int flag = 0, err = 0;
+
+
+	memcpy(&sensor1,ov2311_data,sizeof(struct ov2311));
+	memcpy(&sensor2,ov2311_data,sizeof(struct ov2311));
+	sensor1.i2c_client = NULL;
+	sensor2.i2c_client = NULL;
+
+	switch(ov2311_data->i2c_client->adapter->nr){
+		case CAM1_BUS: sensor1.i2c_client = cam1.i2c_client; break;
+		case CAM2_BUS:
+					sensor1.i2c_client = cam2.i2c_client; 
+				break;
+		default: pr_info("default\n");
+	}
+
+
 	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
 	/*
 	 * Have more retries for power wakeup and power down as we
@@ -3609,21 +3681,21 @@ static int ov2311_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config 
 	int retries = retries_for_i2c_commands * 2;
 	if(format->format.code == MEDIA_BUS_FMT_Y10_1X10)
 	{
-		ov2311_data.fmt.code = MEDIA_BUS_FMT_Y10_1X10;
-		ov2311_data.pix.pixelformat = V4L2_PIX_FMT_Y16;
+		ov2311_data->fmt.code = MEDIA_BUS_FMT_Y10_1X10;
+		ov2311_data->pix.pixelformat = V4L2_PIX_FMT_Y16;
 	}
 	else
 	{
 		format->format.code = MEDIA_BUS_FMT_Y8_1X8;
-		ov2311_data.pix.pixelformat = V4L2_PIX_FMT_GREY;
+		ov2311_data->pix.pixelformat = V4L2_PIX_FMT_GREY;
 	}
-	format->format.colorspace = ov2311_data.fmt.colorspace;
+	format->format.colorspace = ov2311_data->fmt.colorspace;
 	format->format.field = V4L2_FIELD_NONE;
 
-	for (i = 0; i < ov2311_data.num_frm_fmts ; i++) {
+	for (i = 0; i < ov2311_data->num_frm_fmts ; i++) {
 		if (
-			ov2311_data.mcu_cam_frmfmt[i].size.width == format->format.width &&
-			ov2311_data.mcu_cam_frmfmt[i].size.height == format->format.height
+			ov2311_data->mcu_cam_frmfmt[i].size.width == format->format.width &&
+			ov2311_data->mcu_cam_frmfmt[i].size.height == format->format.height
 		) {
 			flag = 1;
 			break;
@@ -3632,23 +3704,25 @@ static int ov2311_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config 
 
 	if(flag == 0) {
 		return -EINVAL;	
-		//format->format.width	= ov2311_data.pix.width;
-		//format->format.height	= ov2311_data.pix.height;
+		//format->format.width	= ov2311_data->pix.width;
+		//format->format.height	= ov2311_data->pix.height;
 	}
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
 	{
 		return 0;
 	}
-printk(" pixel formmat : %#x - %#x - %#x\n", ov2311_data.pix.pixelformat, V4L2_PIX_FMT_GREY, V4L2_PIX_FMT_Y16);
+printk(" pixel formmat : %#x - %#x - %#x\n", ov2311_data->pix.pixelformat, V4L2_PIX_FMT_GREY, V4L2_PIX_FMT_Y16);
+
+#if 0
 	/* call stream config with width, height, frame rate */
 	err = RETRY_SEQUENCE(
 		retries,
 		mcu_stream_config(
-			client,
-			ov2311_data.pix.pixelformat,
-			ov2311_data.mcu_cam_frmfmt[i].mode,
-			ov2311_data.frate_index
+			ov2311_data,
+			ov2311_data->pix.pixelformat,
+			ov2311_data->mcu_cam_frmfmt[i].mode,
+			ov2311_data->frate_index
 		)
 	);
 	if (err < 0)
@@ -3656,10 +3730,32 @@ printk(" pixel formmat : %#x - %#x - %#x\n", ov2311_data.pix.pixelformat, V4L2_P
 		dev_err(&client->dev, "%s: Failed stream_config \n", __func__);
 		return err;
 	}
+#endif 
 
-	ov2311_data.pix.width = format->format.width;
-	ov2311_data.pix.height = format->format.height;
-	ov2311_data.streamcap.capturemode = ov2311_data.mcu_cam_frmfmt[i].mode;
+	ov2311_data->streamcap.capturemode = ov2311_data->mcu_cam_frmfmt[i].mode;
+	if(sensor1.i2c_client){
+		err =
+			mcu_stream_config(&sensor1, ov2311_data->pix.pixelformat, ov2311_data->streamcap.capturemode,
+					ov2311_data->frate_index);
+		if (err < 0) {
+			dev_err(&client->dev, "%s: Failed cam2 stream_config \n", __func__);
+			return err;
+		}
+	}
+
+	if(sensor2.i2c_client){
+		err =
+			mcu_stream_config(&sensor2, ov2311_data->pix.pixelformat, ov2311_data->streamcap.capturemode,
+					ov2311_data->frate_index);
+		if (err < 0) {
+			dev_err(&client->dev, "%s: Failed cam2 stream_config \n", __func__);
+			return err;
+		}
+	}
+
+
+	ov2311_data->pix.width = format->format.width;
+	ov2311_data->pix.height = format->format.height;
 
 	mdelay(10);
 
@@ -3698,39 +3794,76 @@ static struct v4l2_subdev_ops ov2311_subdev_ops = {
 	.pad	= &ov2311_subdev_pad_ops,
 };
 
-static int ov2311_init(struct i2c_client *client)
+static int ov2311_init(struct ov2311 *ov2311_data)
 {
 	u32 tgt_xclk;	/* target xclk */
 	int ret = 0;
 
-	ov2311_data.on = true;
+	struct ov2311 sensor1;
+	struct ov2311 sensor2;
+	memcpy(&sensor1,ov2311_data,sizeof(struct ov2311));
+	memcpy(&sensor2,ov2311_data,sizeof(struct ov2311));
+	sensor1.i2c_client = NULL;	
+	sensor2.i2c_client = NULL;	
+	switch(ov2311_data->i2c_client->adapter->nr){
+		case CAM1_BUS: sensor1.i2c_client = cam1.i2c_client; break;
+		case CAM2_BUS: 
+					
+				 	sensor2.i2c_client = cam2.i2c_client;
+				break;
+		default: pr_info("default\n");//cam_no = 0;
+	}
+
+	ov2311_data->on = true;
+
 
 	/* mclk */
-	tgt_xclk = ov2311_data.mclk;
+	tgt_xclk = ov2311_data->mclk;
 	tgt_xclk = min(tgt_xclk, (u32)ov2311_XCLK_MAX);
 	tgt_xclk = max(tgt_xclk, (u32)ov2311_XCLK_MIN);
-	ov2311_data.mclk = tgt_xclk;
+	ov2311_data->mclk = tgt_xclk;
 
 #ifdef ov2311_DEBUG
 	pr_info("mclk: %d MHz\n", tgt_xclk / 1000000);
 #endif
 
-	ret = mcu_stream_config(client, ov2311_data.pix.pixelformat,
-			ov2311_data.streamcap.capturemode,
-			ov2311_data.frate_index);
+	ret = mcu_stream_config(ov2311_data, ov2311_data->pix.pixelformat,
+			ov2311_data->streamcap.capturemode,
+			ov2311_data->frate_index);
 
+	if(ret)
+			pr_err("cam1 stream config failed\n");
+
+
+	if(sensor1.i2c_client){
+		ret = mcu_stream_config(&sensor1, ov2311_data->pix.pixelformat,
+				ov2311_data->streamcap.capturemode,
+				ov2311_data->frate_index);
+		if(ret)
+			pr_err("cam2 stream config failed\n");
+	} 
+
+	if(sensor2.i2c_client){
+		ret = mcu_stream_config(&sensor2, ov2311_data->pix.pixelformat,
+				ov2311_data->streamcap.capturemode,
+				ov2311_data->frate_index);
+		if(ret)
+			pr_err("cam2 stream config failed\n");
+	}
 	return ret;
 }
 
-static int ov2311_ctrls_init(ISP_CTRL_INFO *mcu_cam_ctrls)
+
+static int ov2311_ctrls_init(struct ov2311 *ov2311_data)
 {
 	struct i2c_client *client = NULL;
 	int numctrls = 0;
 	int err = 0, i = 0;
 	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
-	client = ov2311_data.i2c_client;
 
-	if (mcu_cam_ctrls == NULL)
+	client = ov2311_data->i2c_client;
+
+	if (ov2311_data->mcu_ctrl_info == NULL)
 	{
 		dev_err(
 			&client->dev,
@@ -3747,23 +3880,23 @@ static int ov2311_ctrls_init(ISP_CTRL_INFO *mcu_cam_ctrls)
 	/*
 	 * Enumerate the controls from the MCU
 	 */
-	err = mcu_count_or_list_ctrls(client, mcu_cam_ctrls, &numctrls);
+	err = mcu_count_or_list_ctrls(client, ov2311_data->mcu_ctrl_info, &numctrls);
 	if (err < 0) {
 		dev_err(&client->dev, "Unable to enumerate the controls in the sensor\n");
 		return err;
 	}
 
 	for (i = 0; i < numctrls; i++) {
-		if (mcu_cam_ctrls[i].ctrl_type == CTRL_STANDARD) {
+		if (ov2311_data->mcu_ctrl_info[i].ctrl_type == CTRL_STANDARD) {
 
-			err = mcu_get_ctrl_ui(client, &mcu_ctrl_info[i], mcu_ctrl_info[i].mcu_ctrl_index);
+			err = mcu_get_ctrl_ui(client, &ov2311_data->mcu_ctrl_info[i], ov2311_data->mcu_ctrl_info[i].mcu_ctrl_index);
 			if (err != ERRCODE_SUCCESS) {
 				dev_err(&client->dev, "Error Enumerating Control 0x%08x !! \n",
-					mcu_ctrl_info[i].ctrl_id);
+					ov2311_data->mcu_ctrl_info[i].ctrl_id);
 				return err;
 			}
 			else if (
-				mcu_ctrl_info[i].ctrl_ui_data.ctrl_ui_info.ctrl_ui_type ==
+				ov2311_data->mcu_ctrl_info[i].ctrl_ui_data.ctrl_ui_info.ctrl_ui_type ==
 				V4L2_CTRL_TYPE_MENU
 			) {
 				/*
@@ -3774,7 +3907,7 @@ static int ov2311_ctrls_init(ISP_CTRL_INFO *mcu_cam_ctrls)
 				 * as we do not like to change the release a new version
 				 * of the MCU code for now.
 				 */
-				mcu_ctrl_info[i].ctrl_data.std.ctrl_step = 1;
+				ov2311_data->mcu_ctrl_info[i].ctrl_data.std.ctrl_step = 1;
 			}
 		}
 	}
@@ -3782,7 +3915,10 @@ static int ov2311_ctrls_init(ISP_CTRL_INFO *mcu_cam_ctrls)
 	return 0;
 }
 
-static int ov2311_verify_mcu(struct i2c_client *client)
+
+
+
+static int ov2311_verify_mcu(struct io_pin *gpio, struct i2c_client *client)
 {
 	int ret = 0;
 	unsigned char fw_version[32] = {0};
@@ -3794,11 +3930,11 @@ static int ov2311_verify_mcu(struct i2c_client *client)
 	}
 	
 	
-	toggle_gpio(pwdn_gpio, 0);
+	toggle_gpio(gpio->pwdn_gpio, 0);
 	msleep(100);
-	toggle_gpio(reset_gpio, 0);
+	toggle_gpio(gpio->reset_gpio, 0);
 	msleep(10);
-	toggle_gpio(reset_gpio, 1);
+	toggle_gpio(gpio->reset_gpio, 1);
 	msleep(100);
 
 #if 1
@@ -3855,11 +3991,11 @@ static int ov2311_verify_mcu(struct i2c_client *client)
 		pr_info(" Trying to Detect Bootloader mode\n");
 #endif
 
-		toggle_gpio(reset_gpio, 0);
+		toggle_gpio(gpio->reset_gpio, 0);
 		msleep(10);
-		toggle_gpio(pwdn_gpio, 1);
+		toggle_gpio(gpio->pwdn_gpio, 1);
 		msleep(100);
-		toggle_gpio(reset_gpio, 1);
+		toggle_gpio(gpio->reset_gpio, 1);
 		msleep(100);
 
 		for(loop = 0; loop < 10; loop++) {
@@ -3887,7 +4023,7 @@ static int ov2311_verify_mcu(struct i2c_client *client)
 			return -EFAULT;
 		}
 
-		toggle_gpio(pwdn_gpio, 0);
+		toggle_gpio(gpio->pwdn_gpio, 0);
 
 		/* Allow FW Updated MCU to reboot */
 		msleep(10);
@@ -3937,129 +4073,39 @@ static int ov2311_verify_mcu(struct i2c_client *client)
 	return ret;
 }
 
-static int ov2311_parse_and_get_clocks(struct device *dev)
+
+int set_camera_data(struct i2c_client *client, struct io_pin gpio)
 {
-	int retval = 0;
-
-	if (dev == NULL)
+	int ret = 0;
+	//if((client->adapter->nr != ST1_FPGA_BUS) && (client->adapter->nr != ST2_FPGA_BUS))
+	
+	ret = ov2311_verify_mcu(&gpio,client);
+	if (ret)
 	{
-		dev_err(dev, "%s: Invalid device parameter\n", __func__);
-		return -EINVAL;
+		pr_err( "Error occurred when verifying MCU\n");
+		return ret;
 	}
 
-	ov2311_data.sensor_clk = devm_clk_get(dev, "csi_mclk");
-	if (IS_ERR(ov2311_data.sensor_clk)) {
-		/* assuming clock enabled by default */
-		ov2311_data.sensor_clk = NULL;
-		dev_err(dev, "clock-frequency missing or invalid\n");
-		return PTR_ERR(ov2311_data.sensor_clk);
-	}
-
-	retval = of_property_read_u32(dev->of_node, "mclk",
-					&(ov2311_data.mclk));
-	if (retval) {
-		dev_err(dev, "mclk missing or invalid\n");
-		return retval;
-	}
-
-	retval = of_property_read_u32(dev->of_node, "mclk_source",
-					(u32 *) &(ov2311_data.mclk_source));
-	if (retval) {
-		dev_err(dev, "mclk_source missing or invalid\n");
-		return retval;
-	}
+	switch(client->adapter->nr){
+		case CAM1_BUS:
+				pr_info("OV2311 cam1\n");
+				cam1.i2c_client = client;
+				cam1.iopins.reset_gpio = gpio.reset_gpio;
+				cam1.iopins.pwdn_gpio = gpio.pwdn_gpio;
+				break;
+		case CAM2_BUS:
+				pr_info("OV2311 cam2\n");
+				cam2.i2c_client = client;
+				cam2.iopins.reset_gpio = gpio.reset_gpio;
+				cam2.iopins.pwdn_gpio = gpio.pwdn_gpio;
+				break;
+		default:
+			   pr_info("Unknown device\n");
+	} 
 	
-	retval = of_property_read_u32(dev->of_node, "mipi-data-lanes", (u32 *) &(ov2311_data.mipi_lane_config));
-	if (retval) {
-		dev_err(dev, " mipi lane missing or invalid\n");
-		return retval;
-	}
-
-	retval = of_property_read_u32(dev->of_node, "camera-mipi-clk", (u32 *) &(ov2311_data.mipi_clk_config));
-	if (retval) {
-		dev_err(dev, "camera mipi clk is missing or invalid\n");
-		return retval;
-	}
-	else
-		pr_info("camera-mipi-clk = %dMHz\n",ov2311_data.mipi_clk_config);
-
-	/*
-	 * Though we parse csi_id, we do not seem to be using it as there
-	 * doesn't seem to be a way to specify the virutal channel to the
-	 * MCU.
-	 */
-	retval = of_property_read_u32(dev->of_node, "csi_id",
-					&(ov2311_data.csi));
-	if (retval) {
-		dev_err(dev, "csi id missing or invalid\n");
-		return retval;
-	}
-	
-
 	return 0;
 }
 
-static int ov2311_parse_and_get_gpios(struct device *dev)
-{
-	int err;
-	struct device_node *node = NULL;
-
-	if (dev == NULL)
-	{
-		dev_err(dev, "%s: Invalid device parameter\n", __func__);
-		return -EINVAL;
-	}
-
-	/*
-	 * Assume node would be good if the given 'dev' parameter
-	 * is good.
-	 */
-	node = dev->of_node;
-
-	pwdn_gpio = of_get_named_gpio(node, "pwn-gpios", 0);
-	if (!gpio_is_valid(pwdn_gpio)) {
-		dev_err(dev, "no sensor pwdn pin available");
-		return -EINVAL;
-	}
-	else {
-#ifdef ov2311_DEBUG
-		printk("BOOT = %x \n", pwdn_gpio);
-#endif
-	}
-
-	reset_gpio = of_get_named_gpio(node, "rst-gpios", 0);
-	if (!gpio_is_valid(reset_gpio)) {
-		dev_err(dev, "no sensor reset pin available");
-		return -EINVAL;
-	}
-	else {
-#ifdef ov2311_DEBUG
-		printk("RESET = %x \n", reset_gpio);
-#endif
-	}
-
-	/*
-	 * The ov2311_mipi_pwdn & ov2311_mipi_reset seem to be just new
-	 * identifiers. So any name shouldn't be a problem.
-	 */
-	err = devm_gpio_request_one(dev, pwdn_gpio, GPIOF_OUT_INIT_HIGH,
-					"ov2311_mipi_pwdn");
-	if (err < 0) {
-		dev_warn(dev, "Failed to set power pin\n");
-		dev_warn(dev, "err = %d\n", err);
-		return err;
-	}
-
-	err = devm_gpio_request_one(dev, reset_gpio, GPIOF_OUT_INIT_HIGH,
-					"ov2311_mipi_reset");
-	if (err < 0) {
-		dev_warn(dev, "Failed to set reset pin\n");
-		dev_warn(dev, "err = %d\n", err);
-		return err;
-	}
-
-	return 0;
-}
 
 /*!
  * ov2311 I2C probe function
@@ -4070,58 +4116,156 @@ static int ov2311_parse_and_get_gpios(struct device *dev)
 static int ov2311_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
-	printk(" ov2311_probe \n");
+
 	struct pinctrl *pinctrl;
 	struct device_node *node = client->dev.of_node;
 	struct device *dev = &client->dev;
-
+	struct io_pin gpio;
 	int ret, frm_fmt_size = 0, i;
 	uint16_t sensor_id = 0;
-	pr_err("Func : %s Line : %u\n", __func__, __LINE__);
+	int retval;
+
+	// Added by Karthik	
+	struct ov2311 *ov2311_data;
+	pr_info("******* Probing OV2311 Sensor *******\n");	
+	ov2311_data = devm_kzalloc(dev, sizeof(*ov2311_data), GFP_KERNEL);
+	ov2311_data->i2c_client = client;
+	
+	// TODO : check whether this condition is needed
 	if (!IS_ENABLED(CONFIG_OF) || !node)
 		return -EINVAL;
 
+	/* ov2311 pinctrl*/
 	pinctrl = devm_pinctrl_get_select_default(dev);
 	if (IS_ERR(pinctrl))
 		dev_warn(dev, "no pin available\n");
 
 	/* Set initial values for the sensor struct. */
-	memset(&ov2311_data, 0, sizeof(ov2311_data));
+//	memset(&ov2311_data, 0, sizeof(ov2311_data));
 
-	ret = ov2311_parse_and_get_gpios(dev);
-	if (ret)
-	{
-		pr_info("Warning: couldn't get GPIOs\n");
+	/* request power down pin */
+	gpio.pwdn_gpio = of_get_named_gpio(dev->of_node, "pwn-gpios", 0);
+	if (!gpio_is_valid(gpio.pwdn_gpio)) {
+		dev_err(dev, "no sensor pwdn pin available");
+		return -EINVAL;
+	}
+	else {
+#ifdef ov2311_DEBUG
+		printk("BOOT = %x \n", gpio.pwdn_gpio);
+#endif
 	}
 
-	ret = ov2311_parse_and_get_clocks(dev);
+	gpio.reset_gpio = of_get_named_gpio(dev->of_node, "rst-gpios", 0);
+	if (!gpio_is_valid(gpio.reset_gpio)) {
+		dev_err(dev, "no sensor reset pin available");
+		return -EINVAL;
+	}
+	else {
+#ifdef ov2311_DEBUG
+		printk("RESET = %x \n",gpio.reset_gpio);
+#endif
+	}
+
+	/*
+	 * The ov2311_mipi_pwdn & ov2311_mipi_reset seem to be just new
+	 * identifiers. So any name shouldn't be a problem.
+	 */
+	retval = devm_gpio_request_one(dev, gpio.pwdn_gpio, GPIOF_OUT_INIT_HIGH,
+					"ov2311_mipi_pwdn");
+	if (retval < 0) {
+		dev_warn(dev, "Failed to set power pin\n");
+		dev_warn(dev, "err = %d\n", retval);
+		return retval;
+	}
+
+	retval = devm_gpio_request_one(dev, gpio.reset_gpio, GPIOF_OUT_INIT_HIGH,
+					"ov2311_mipi_reset");
+	if (retval < 0) {
+		dev_warn(dev, "Failed to set reset pin\n");
+		dev_warn(dev, "err = %d\n", retval);
+		return retval;
+	}
+		pr_info(" Probe : %d \n", __LINE__);
+	
+	ov2311_data->sensor_clk = devm_clk_get(dev, "csi_mclk");
+	if (IS_ERR(ov2311_data->sensor_clk)) {
+		/* assuming clock enabled by default */
+		ov2311_data->sensor_clk = NULL;
+		dev_err(dev, "clock-frequency missing or invalid\n");
+	//	return PTR_ERR(ov2311_data->sensor_clk);
+	}
+
+	pr_info(" Probe : %d \n", __LINE__);
+
+	retval = of_property_read_u32(dev->of_node, "mclk",
+					&(ov2311_data->mclk));
+	if (retval) {
+		dev_err(dev, "mclk missing or invalid\n");
+		return retval;
+	}
+
+	retval = of_property_read_u32(dev->of_node, "mclk_source",
+					(u32 *) &(ov2311_data->mclk_source));
+	if (retval) {
+		dev_err(dev, "mclk_source missing or invalid\n");
+		return retval;
+	}
+		
+	retval = of_property_read_u32(dev->of_node, "mipi-data-lanes", (u32 *) &(ov2311_data->mipi_lane_config));
+	if (retval) {
+		dev_err(dev, " mipi lane missing or invalid\n");
+		return retval;
+	}
+	
+		pr_info(" Probe : %d \n", __LINE__);
+
+
+	retval = of_property_read_u32(dev->of_node, "camera-mipi-clk", (u32 *) &(ov2311_data->mipi_clk_config));
+	if (retval) {
+		dev_err(dev, "camera mipi clk is missing or invalid\n");
+		return retval;
+	}
+	else
+		pr_info("camera-mipi-clk = %dMHz\n",ov2311_data->mipi_clk_config);
+
+	pr_info(" Probe : %d \n", __LINE__);
+	/*
+	 * Though we parse csi_id, we do not seem to be using it as there
+	 * doesn't seem to be a way to specify the virutal channel to the
+	 * MCU.
+	 */
+	retval = of_property_read_u32(dev->of_node, "csi_id",
+					&(ov2311_data->csi));
+	if (retval) {
+		dev_err(dev, "csi id missing or invalid\n");
+		return retval;
+	}
+	
+
+//	ret = ov2311_parse_and_get_clocks(dev);
+//	if (ret)
+//	{
+//		dev_err(dev, "Error occurred when getting clock\n");
+//		return ret;
+//	}
+
+	clk_prepare_enable(ov2311_data->sensor_clk);
+	pr_info(" Probe : %d \n", __LINE__);
+	ret = set_camera_data(client,gpio);
 	if (ret)
 	{
-		dev_err(dev, "Error occurred when getting clock\n");
+		dev_err(dev, "Error occurred when verifying MCU\n");
 		return ret;
 	}
-
-	clk_prepare_enable(ov2311_data.sensor_clk);
 
 	/*
 	 * We usually get and set/enable regulators here. But it doesn't
 	 * seem to be needed here as the Variscite EVK seems to be supplying
 	 * the required voltage directly without us needing to set it.
 	 */
-#if 1
 	ret = RETRY_SEQUENCE(
 		retries_for_i2c_commands,
-		ov2311_verify_mcu(client)
-	);
-	if (ret < 0)
-	{
-		dev_err(dev, "Error occurred when verifying MCU\n");
-		return ret;
-	}
-#endif 	
-	ret = RETRY_SEQUENCE(
-		retries_for_i2c_commands,
-		mcu_isp_configuration(CMD_ID_LANE_CONFIG,client)
+		mcu_isp_configuration(ov2311_data,CMD_ID_LANE_CONFIG,client)
 	);
 	if (ret < 0) 
 	{
@@ -4131,7 +4275,7 @@ static int ov2311_probe(struct i2c_client *client,
 
 	ret = RETRY_SEQUENCE(
 		retries_for_i2c_commands,
-		mcu_isp_configuration(CMD_ID_MIPI_CLK_CONFIG,client)
+		mcu_isp_configuration(ov2311_data, CMD_ID_MIPI_CLK_CONFIG,client)
 	);
 
 	if (ret < 0)
@@ -4158,7 +4302,7 @@ static int ov2311_probe(struct i2c_client *client,
 	 */
 	ret = RETRY_SEQUENCE(
 		retries_for_i2c_commands,
-		mcu_count_or_list_fmts(client, NULL, &frm_fmt_size)
+		mcu_count_or_list_fmts(ov2311_data, NULL, &frm_fmt_size)
 	);
 	if (ret < 0)
 	{
@@ -4166,15 +4310,22 @@ static int ov2311_probe(struct i2c_client *client,
 		return ret;
 	}
 
+
 	/*
 	 * Initialise the MCU related data as we're about to use them.
 	 */
-	ret = mcu_data_init(dev, frm_fmt_size);
+	ret = mcu_data_init(ov2311_data, dev, frm_fmt_size);
 	if (ret < 0)
 	{
 		dev_err(dev, "%s: failed to initialize MCU related data\n", __func__);
 		return ret;
 	}
+
+	if (mcu_count_or_list_ctrls(client, ov2311_data->mcu_ctrl_info, &num_ctrls) < 0) {
+		dev_err(dev, "%s, Failed to get number of controls for sensor\n", __func__);
+		return -EFAULT;
+	}
+
 
 	ret = RETRY_SEQUENCE(
 		retries_for_i2c_commands,
@@ -4201,7 +4352,7 @@ static int ov2311_probe(struct i2c_client *client,
 	 */
 	ret = RETRY_SEQUENCE(
 		retries_for_i2c_commands,
-		mcu_count_or_list_fmts(client, stream_info, &frm_fmt_size)
+		mcu_count_or_list_fmts(ov2311_data, ov2311_data->stream_info, &frm_fmt_size)
 	);
 	if (ret < 0)
 	{
@@ -4212,27 +4363,27 @@ static int ov2311_probe(struct i2c_client *client,
 	/*
 	 * Fill some state information as required.
 	 */
-	ov2311_data.i2c_client = client;
+	ov2311_data->i2c_client = client;
 
-	ov2311_data.pix.pixelformat = V4L2_PIX_FMT_GREY;
-	//ov2311_data.pix.pixelformat = V4L2_PIX_FMT_Y16;
-	ov2311_data.fmt.code = ov2311_DEFAULT_DATAFMT;
-	ov2311_data.fmt.colorspace = ov2311_DEFAULT_COLORSPACE;
-	ov2311_data.pix.width = ov2311_DEFAULT_WIDTH;
-	ov2311_data.pix.height = ov2311_DEFAULT_HEIGHT;
-	ov2311_data.streamcap.capability =  V4L2_MODE_HIGHQUALITY | V4L2_CAP_TIMEPERFRAME;
-	ov2311_data.streamcap.capturemode = ov2311_DEFAULT_MODE;
-	ov2311_data.streamcap.timeperframe.denominator = ov2311_DEFAULT_FPS;
-	ov2311_data.streamcap.timeperframe.numerator = 1;
-	ov2311_data.num_frm_fmts = frm_fmt_size;
-	ov2311_data.power_on = 0;
+	ov2311_data->pix.pixelformat = V4L2_PIX_FMT_GREY;
+	//ov2311_data->pix.pixelformat = V4L2_PIX_FMT_Y16;
+	ov2311_data->fmt.code = ov2311_DEFAULT_DATAFMT;
+	ov2311_data->fmt.colorspace = ov2311_DEFAULT_COLORSPACE;
+	ov2311_data->pix.width = ov2311_DEFAULT_WIDTH;
+	ov2311_data->pix.height = ov2311_DEFAULT_HEIGHT;
+	ov2311_data->streamcap.capability =  V4L2_MODE_HIGHQUALITY | V4L2_CAP_TIMEPERFRAME;
+	ov2311_data->streamcap.capturemode = ov2311_DEFAULT_MODE;
+	ov2311_data->streamcap.timeperframe.denominator = ov2311_DEFAULT_FPS;
+	ov2311_data->streamcap.timeperframe.numerator = 1;
+	ov2311_data->num_frm_fmts = frm_fmt_size;
+	ov2311_data->power_on = 0;
 
 	/*
 	 * Configure the stream with default configuration
 	 */
 	ret = RETRY_SEQUENCE(
 		retries_for_i2c_commands,
-		ov2311_init(client)
+		ov2311_init(ov2311_data)
 	);
 	if (ret < 0)
 	{
@@ -4240,14 +4391,17 @@ static int ov2311_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	v4l2_i2c_subdev_init(&ov2311_data.subdev, client, &ov2311_subdev_ops);
+	v4l2_i2c_subdev_init(&ov2311_data->subdev, client, &ov2311_subdev_ops);
 	printk(" V4l2 i2c subdev ret value : %d\n ", ret);
+
+// TODO : Check whether this code is needed
+
 	/*
 	 * Initialize Controls by getting details about the controls from the MCU
 	 */
 	ret = RETRY_SEQUENCE(
 		retries_for_i2c_commands,
-		ov2311_ctrls_init(mcu_ctrl_info)
+		ov2311_ctrls_init(ov2311_data)
 	);
 	if (ret < 0)
 	{
@@ -4258,14 +4412,14 @@ static int ov2311_probe(struct i2c_client *client,
 	 * Write default values for all controls
 	 */
 	for (i = 0; i < num_ctrls; i++) {
-		if (mcu_ctrl_info[i].ctrl_type == CTRL_STANDARD) {
+		if (ov2311_data->mcu_ctrl_info[i].ctrl_type == CTRL_STANDARD) {
 			int ret;
 			struct v4l2_control ctrl = {
-				.id = mcu_ctrl_info[i].ctrl_id,
-				.value = mcu_ctrl_info[i].ctrl_data.std.ctrl_def
+				.id = ov2311_data->mcu_ctrl_info[i].ctrl_id,
+				.value = ov2311_data->mcu_ctrl_info[i].ctrl_data.std.ctrl_def
 			};
 
-			if ((mcu_ctrl_info[i].ctrl_id == 0x9a0926) || (mcu_ctrl_info[i].ctrl_id == 0x9a092b))
+			if ((ov2311_data->mcu_ctrl_info[i].ctrl_id == 0x9a0926) || (ov2311_data->mcu_ctrl_info[i].ctrl_id == 0x9a092b))
 			{
 				/*
 				 * We know that the MCU would fail when we
@@ -4278,22 +4432,24 @@ static int ov2311_probe(struct i2c_client *client,
 
 			ret = RETRY_SEQUENCE(
 				retries_for_i2c_commands,
-				ov2311_s_ctrl(&ov2311_data.subdev, &ctrl)
+				ov2311_s_ctrl(&ov2311_data->subdev, &ctrl)
 			);
 			if (ret < 0)
 			{
-				dev_warn(dev, "Failed to write default value for a control: %d; Control ID: %x\n", i, mcu_ctrl_info[i].ctrl_id);
+				dev_warn(dev, "Failed to write default value for a control: %d; Control ID: %x\n", i, ov2311_data->mcu_ctrl_info[i].ctrl_id);
 			}
 		}
 	}
+ 
 
-	ret = v4l2_async_register_subdev(&ov2311_data.subdev);
+
+	ret = v4l2_async_register_subdev(&ov2311_data->subdev);
 	if (ret)
 	{
 		dev_err(dev, "Failed to register the I2C subdev for the sensor\n");
 		return ret;
 	}
-
+	mcu_isp_stream_off(client);
 	pr_info("ov2311 V%s detected.\n", VERSION);
 
 	return 0;
@@ -4308,10 +4464,14 @@ static int ov2311_probe(struct i2c_client *client,
 static int ov2311_remove(struct i2c_client *client)
 {
 //	int err;
-	v4l2_async_unregister_subdev(&ov2311_data.subdev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct ov2311 *ov2311_data = to_ov2311(client);
 
-	clk_disable_unprepare(ov2311_data.sensor_clk);
+	v4l2_async_unregister_subdev(sd);
 
+	clk_disable_unprepare(ov2311_data->sensor_clk);
+
+#if 0
 	/*
 	 * Power down the MCU
 	 */
@@ -4328,6 +4488,7 @@ static int ov2311_remove(struct i2c_client *client)
 
 	if (reset_gpio >= 0)
 		devm_gpio_free(&client->dev, reset_gpio);
+#endif 
 
 	return 0;
 }
@@ -4349,6 +4510,8 @@ static struct i2c_driver ov2311_i2c_driver = {
 	.id_table = ov2311_id,
 };
 
+EXPORT_SYMBOL(set_camera_data);     
+EXPORT_SYMBOL(mcu_isp_init);
 
 module_i2c_driver(ov2311_i2c_driver);
 
