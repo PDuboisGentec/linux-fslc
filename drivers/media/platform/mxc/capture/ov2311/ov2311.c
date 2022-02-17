@@ -3394,7 +3394,7 @@ static int ov2311_enum_mbus_code(struct v4l2_subdev *sd,struct v4l2_subdev_pad_c
 		code->code = MEDIA_BUS_FMT_Y10_1X10;
 	}
 
-	code->code = ov2311_data->fmt.code;
+	
 	
 	return 0;
 }
