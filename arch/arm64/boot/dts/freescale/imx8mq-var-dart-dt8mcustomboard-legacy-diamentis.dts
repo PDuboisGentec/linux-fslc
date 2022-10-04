@@ -138,7 +138,7 @@
 
 
 &i2c2 {
-	clock-frequency = <400000>;
+	clock-frequency = <100000>;
 	ov2311_mipi1: ov2311_mipi1@42 {
 		status = "okay";
 		compatible = "ov2311";
@@ -163,7 +163,7 @@
 };
 
 &i2c4 {
-	clock-frequency = <400000>;
+	clock-frequency = <100000>;
 	ov2311_mipi2: ov2311_mipi2@42 {
 		status = "okay";
 		compatible = "ov2311";
